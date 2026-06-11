@@ -15,7 +15,39 @@ function cleanText(value: string | undefined): string {
     .replace(/&amp;/g, "&")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
     .trim();
+}
+
+function isBlockedArticle(article: NewsArticle): boolean {
+  const text = `${article.title} ${article.summary} ${article.link}`.toLowerCase();
+
+  const blockedTerms = [
+    "coupon",
+    "coupons",
+    "promo",
+    "promo code",
+    "promo codes",
+    "discount",
+    "discount code",
+    "discount codes",
+    "deal",
+    "deals",
+    "sale",
+    "save",
+    "savings",
+    "offer",
+    "offers",
+    "voucher",
+    "vouchers",
+    "best buy",
+    "black friday",
+    "cyber monday",
+    "newsletter",
+    "shopping",
+  ];
+
+  return blockedTerms.some((term) => text.includes(term));
 }
 
 export async function GET() {
@@ -24,14 +56,12 @@ export async function GET() {
       newsSources.map(async (source) => {
         const feed = await parser.parseURL(source.url);
 
-        return feed.items.slice(0, 8).map((item, index): NewsArticle => {
+        return feed.items.slice(0, 10).map((item, index): NewsArticle => {
           const publishedDate =
-            item.isoDate ||
-            item.pubDate ||
-            new Date().toISOString();
+            item.isoDate || item.pubDate || new Date().toISOString();
 
           return {
-            id: `${source.name}-${index}-${item.link}`,
+            id: `${source.name}-${index}-${item.link || item.title}`,
             title: cleanText(item.title),
             link: item.link || "#",
             source: source.name,
@@ -57,6 +87,7 @@ export async function GET() {
         return [];
       })
       .filter((article) => article.title && article.link)
+      .filter((article) => !isBlockedArticle(article))
       .sort(
         (a, b) =>
           new Date(b.publishedAt).getTime() -

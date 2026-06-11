@@ -1,10 +1,9 @@
-import { getEnvValue } from "@/app/lib/env";
 import { NewsArticle, TopicSummary } from "@/app/lib/types";
 
 export const dynamic = "force-dynamic";
 
 const HF_MODEL = "facebook/bart-large-cnn";
-const HF_INFERENCE_URL = "https://router.huggingface.co/hf-inference/models/";
+const HF_ENDPOINT = `https://router.huggingface.co/hf-inference/models/${HF_MODEL}`;
 
 const STOP_WORDS = new Set([
   "the",
@@ -60,11 +59,41 @@ const STOP_WORDS = new Set([
   "has",
   "have",
   "had",
+  "just",
+  "also",
+  "said",
+  "says",
+  "read",
+  "article",
+  "comments",
+  "comment",
+  "https",
+  "http",
+  "www",
+  "com",
+  "june",
+  "2026",
+  "promo",
+  "codes",
+  "code",
+  "coupon",
+  "discount",
+  "newsletter",
 ]);
+
+type ArticleWithKeywords = NewsArticle & {
+  keywords: string[];
+};
+
+type TopicGroup = {
+  articles: ArticleWithKeywords[];
+  keywords: string[];
+};
 
 function normalizeText(text: string): string {
   return text
     .toLowerCase()
+    .replace(/https?:\/\/\S+/g, " ")
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -102,15 +131,6 @@ function calculateSimilarity(keywordsA: string[], keywordsB: string[]): number {
   return intersection.length / union.size;
 }
 
-type ArticleWithKeywords = NewsArticle & {
-  keywords: string[];
-};
-
-type TopicGroup = {
-  articles: ArticleWithKeywords[];
-  keywords: string[];
-};
-
 function mergeKeywords(articles: ArticleWithKeywords[]): string[] {
   const frequency = new Map<string, number>();
 
@@ -127,14 +147,18 @@ function mergeKeywords(articles: ArticleWithKeywords[]): string[] {
 }
 
 function groupSimilarArticles(articles: NewsArticle[]): TopicGroup[] {
-  const articlesWithKeywords: ArticleWithKeywords[] = articles.map((article) => ({
-    ...article,
-    keywords: extractKeywords(article),
-  }));
+  const articlesWithKeywords: ArticleWithKeywords[] = articles.map(
+    (article) => ({
+      ...article,
+      keywords: extractKeywords(article),
+    })
+  );
 
   const groups: TopicGroup[] = [];
 
   for (const article of articlesWithKeywords) {
+    if (article.keywords.length === 0) continue;
+
     let bestGroupIndex = -1;
     let bestSimilarity = 0;
 
@@ -149,7 +173,9 @@ function groupSimilarArticles(articles: NewsArticle[]): TopicGroup[] {
 
     if (bestGroupIndex !== -1 && bestSimilarity >= 0.18) {
       groups[bestGroupIndex].articles.push(article);
-      groups[bestGroupIndex].keywords = mergeKeywords(groups[bestGroupIndex].articles);
+      groups[bestGroupIndex].keywords = mergeKeywords(
+        groups[bestGroupIndex].articles
+      );
     } else {
       groups.push({
         articles: [article],
@@ -160,7 +186,7 @@ function groupSimilarArticles(articles: NewsArticle[]): TopicGroup[] {
 
   return groups
     .sort((a, b) => b.articles.length - a.articles.length)
-    .slice(0, 5);
+    .slice(0, 3);
 }
 
 function buildTopicTitle(group: TopicGroup): string {
@@ -177,31 +203,44 @@ function buildTopicTitle(group: TopicGroup): string {
 
 function buildTopicInput(group: TopicGroup): string {
   return group.articles
-    .slice(0, 6)
+    .slice(0, 4)
     .map((article, index) => {
       return `${index + 1}. ${article.title}. ${article.summary}`;
     })
     .join("\n\n")
-    .slice(0, 1800);
+    .slice(0, 1200);
 }
 
-function buildFallbackTopicSummary(group: TopicGroup): string {
-  const keywords = group.keywords.slice(0, 4);
-  const label = keywords.length > 0 ? keywords.join(", ") : "recent tech developments";
+function fallbackTopicSummary(group: TopicGroup): string {
   const articleCount = group.articles.length;
+  const sources = Array.from(
+    new Set(group.articles.map((article) => article.source))
+  ).join(", ");
 
-  return `These ${articleCount} stories cluster around ${label}. The main theme is the ongoing momentum across emerging tech, product updates, and industry shifts reflected in the current headlines.`;
+  const mainArticles = group.articles
+    .slice(0, 3)
+    .map((article) => article.title)
+    .join("; ");
+
+  return `This topic includes ${articleCount} related article${
+    articleCount === 1 ? "" : "s"
+  } from ${sources}. The main stories are: ${mainArticles}.`;
 }
 
 async function summarizeTopic(group: TopicGroup): Promise<string> {
   try {
     const inputText = buildTopicInput(group);
-    const hfToken = getEnvValue("HF_TOKEN");
+    const token = process.env.HF_TOKEN;
 
-    const response = await fetch(`${HF_INFERENCE_URL}${HF_MODEL}`, {
+    if (!token) {
+      console.warn("HF_TOKEN is not set, using local fallback summary.");
+      return fallbackTopicSummary(group);
+    }
+
+    const response = await fetch(HF_ENDPOINT, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${hfToken}`,
+        Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -222,7 +261,7 @@ async function summarizeTopic(group: TopicGroup): Promise<string> {
       console.error("Hugging Face topic summary failed:", response.status);
       console.error(errorText);
 
-      return buildFallbackTopicSummary(group);
+      return fallbackTopicSummary(group);
     }
 
     const result = await response.json();
@@ -235,11 +274,11 @@ async function summarizeTopic(group: TopicGroup): Promise<string> {
       return result.summary_text;
     }
 
-    return "No summary was returned for this topic.";
+    return fallbackTopicSummary(group);
   } catch (error) {
     console.error("Hugging Face topic summary request failed:", error);
 
-    return buildFallbackTopicSummary(group);
+    return fallbackTopicSummary(group);
   }
 }
 
@@ -261,26 +300,6 @@ export async function POST(request: Request) {
 
     const groups = groupSimilarArticles(articles.slice(0, 25));
 
-    const hfToken = getEnvValue("HF_TOKEN");
-
-    if (!hfToken?.trim()) {
-      const topicSummaries: TopicSummary[] = groups.map((group) => ({
-        topic: buildTopicTitle(group),
-        summary: buildFallbackTopicSummary(group),
-        articles: group.articles.slice(0, 4).map((article) => ({
-          title: article.title,
-          source: article.source,
-          link: article.link,
-        })),
-      }));
-
-      return Response.json({
-        topics: topicSummaries,
-        model: "local-fallback",
-        generatedAt: new Date().toISOString(),
-      });
-    }
-
     console.log("Topic groups:", groups.length);
     console.log(
       groups.map((group) => ({
@@ -290,25 +309,32 @@ export async function POST(request: Request) {
       }))
     );
 
-    const topicSummaries: TopicSummary[] = await Promise.all(
-      groups.map(async (group) => {
-        const summary = await summarizeTopic(group);
+    const topicSummaries: TopicSummary[] = [];
 
-        return {
-          topic: buildTopicTitle(group),
-          summary,
-          articles: group.articles.slice(0, 4).map((article) => ({
-            title: article.title,
-            source: article.source,
-            link: article.link,
-          })),
-        };
-      })
-    );
+    for (const group of groups) {
+      let summary: string;
+
+      try {
+        summary = await summarizeTopic(group);
+      } catch (error) {
+        console.error("Using fallback summary for topic:", error);
+        summary = fallbackTopicSummary(group);
+      }
+
+      topicSummaries.push({
+        topic: buildTopicTitle(group),
+        summary,
+        articles: group.articles.slice(0, 4).map((article) => ({
+          title: article.title,
+          source: article.source,
+          link: article.link,
+        })),
+      });
+    }
 
     return Response.json({
       topics: topicSummaries,
-      model: HF_MODEL,
+      model: "facebook/bart-large-cnn",
       generatedAt: new Date().toISOString(),
     });
   } catch (error) {
