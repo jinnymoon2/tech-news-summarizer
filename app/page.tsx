@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { NewsArticle } from "@/app/lib/types";
+import { NewsArticle, TopicSummary } from "@/app/lib/types";
 
 type Tab = "news" | "summary";
 
@@ -10,6 +10,7 @@ export default function HomePage() {
   const [activeTab, setActiveTab] = useState<Tab>("news");
   const [loadingNews, setLoadingNews] = useState(true);
   const [summary, setSummary] = useState("");
+  const [topicSummaries, setTopicSummaries] = useState<TopicSummary[]>([]);
   const [loadingSummary, setLoadingSummary] = useState(false);
   const [error, setError] = useState("");
 
@@ -43,35 +44,49 @@ export default function HomePage() {
   }, []);
 
   async function summarizeArticles() {
-    try {
-      setLoadingSummary(true);
-      setError("");
+  try {
+    setLoadingSummary(true);
+    setError("");
+    setSummary("");
+    setTopicSummaries([]);
 
-      const response = await fetch("/api/summarize", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          articles,
-        }),
-      });
+    const response = await fetch("/api/summarize", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      cache: "no-store",
+      body: JSON.stringify({
+        articles,
+        regenerateId: Date.now(),
+      }),
+    });
 
-      const data = await response.json();
+    const data = await response.json();
 
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to summarize news.");
-      }
-
-      setSummary(data.summary);
-      setActiveTab("summary");
-    } catch (error) {
-      console.error("Failed to summarize articles.", error);
-      setError("Could not summarize the articles. Check your Hugging Face token.");
-    } finally {
-      setLoadingSummary(false);
+    if (!response.ok) {
+      throw new Error(
+        data.detail || data.error || "Failed to summarize news."
+      );
     }
+
+    if (Array.isArray(data.topics)) {
+      setTopicSummaries(data.topics);
+    } else {
+      setSummary(data.summary || "No summary was returned.");
+    }
+
+    setActiveTab("summary");
+  } catch (err) {
+    if (err instanceof Error) {
+      setError(err.message);
+    } else {
+      setError("Could not summarize the articles.");
+    }
+  } finally {
+    setLoadingSummary(false);
   }
+}
 
   return (
     <main className="min-h-screen bg-neutral-950 text-white">
@@ -145,6 +160,7 @@ export default function HomePage() {
         {activeTab === "summary" && (
           <SummaryPanel
             summary={summary}
+            topicSummaries={topicSummaries}
             loadingSummary={loadingSummary}
             articleCount={articles.length}
             onSummarize={summarizeArticles}
@@ -223,11 +239,13 @@ function NewsGrid({ articles }: { articles: NewsArticle[] }) {
 
 function SummaryPanel({
   summary,
+  topicSummaries,
   loadingSummary,
   articleCount,
   onSummarize,
 }: {
   summary: string;
+  topicSummaries: TopicSummary[];
   loadingSummary: boolean;
   articleCount: number;
   onSummarize: () => void;
@@ -237,13 +255,13 @@ function SummaryPanel({
       <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <p className="text-sm uppercase tracking-[0.3em] text-cyan-300">
-            AI Summary
+            AI Topic Summary
           </p>
           <h2 className="mt-2 text-3xl font-bold">
-            Today’s main tech themes
+            Today’s important tech topics
           </h2>
           <p className="mt-2 text-neutral-400">
-            Based on {articleCount} loaded article snippets.
+            Articles are grouped by similar keywords, then summarized by topic.
           </p>
         </div>
 
@@ -252,23 +270,75 @@ function SummaryPanel({
           disabled={loadingSummary || articleCount === 0}
           className="rounded-full border border-neutral-700 px-5 py-2 text-sm font-medium text-neutral-200 hover:border-cyan-400 disabled:cursor-not-allowed disabled:text-neutral-500"
         >
-          {loadingSummary ? "Generating..." : "Regenerate"}
+          {loadingSummary ? "Regenerating..." : "Regenerate"}
         </button>
       </div>
 
-      {summary ? (
+      {loadingSummary && (
+        <div className="rounded-2xl border border-dashed border-neutral-700 p-8 text-center text-neutral-400">
+          Grouping similar articles and generating topic summaries...
+        </div>
+      )}
+
+      {!loadingSummary && topicSummaries.length > 0 && (
+        <div className="space-y-6">
+          {topicSummaries.map((topic, index) => (
+            <article
+              key={`${topic.topic}-${index}`}
+              className="rounded-2xl border border-neutral-800 bg-neutral-950 p-5"
+            >
+              <div className="mb-3 flex items-center gap-3">
+                <span className="rounded-full bg-cyan-400/10 px-3 py-1 text-xs font-semibold text-cyan-300">
+                  Topic {index + 1}
+                </span>
+                <h3 className="text-xl font-bold">{topic.topic}</h3>
+              </div>
+
+              <p className="text-base leading-7 text-neutral-300">
+                {topic.summary}
+              </p>
+
+              <div className="mt-5">
+                <p className="mb-2 text-xs uppercase tracking-[0.2em] text-neutral-500">
+                  Related articles
+                </p>
+
+                <div className="space-y-2">
+                  {topic.articles.map((article) => (
+                    <a
+                      key={article.link}
+                      href={article.link}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block rounded-xl border border-neutral-800 px-4 py-3 text-sm text-neutral-300 transition hover:border-cyan-400/50 hover:text-cyan-200"
+                    >
+                      <span className="text-neutral-500">
+                        {article.source} —{" "}
+                      </span>
+                      {article.title}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+
+      {!loadingSummary && topicSummaries.length === 0 && summary && (
         <p className="whitespace-pre-line text-lg leading-8 text-neutral-200">
           {summary}
         </p>
-      ) : (
+      )}
+
+      {!loadingSummary && topicSummaries.length === 0 && !summary && (
         <div className="rounded-2xl border border-dashed border-neutral-700 p-8 text-center text-neutral-400">
-          Click “Summarize Today” to generate an AI summary.
+          Click “Summarize Today” to generate topic-based summaries.
         </div>
       )}
     </section>
   );
 }
-
 function LoadingGrid() {
   return (
     <section className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
