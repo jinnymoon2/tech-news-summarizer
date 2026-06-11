@@ -1,8 +1,10 @@
+import { getEnvValue } from "@/app/lib/env";
 import { NewsArticle, TopicSummary } from "@/app/lib/types";
 
 export const dynamic = "force-dynamic";
 
 const HF_MODEL = "facebook/bart-large-cnn";
+const HF_INFERENCE_URL = "https://router.huggingface.co/hf-inference/models/";
 
 const STOP_WORDS = new Set([
   "the",
@@ -192,14 +194,14 @@ function buildFallbackTopicSummary(group: TopicGroup): string {
 }
 
 async function summarizeTopic(group: TopicGroup): Promise<string> {
-  const inputText = buildTopicInput(group);
+  try {
+    const inputText = buildTopicInput(group);
+    const hfToken = getEnvValue("HF_TOKEN");
 
-  const response = await fetch(
-    `https://api-inference.huggingface.co/models/${HF_MODEL}`,
-    {
+    const response = await fetch(`${HF_INFERENCE_URL}${HF_MODEL}`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${process.env.HF_TOKEN}`,
+        Authorization: `Bearer ${hfToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -212,29 +214,33 @@ async function summarizeTopic(group: TopicGroup): Promise<string> {
           wait_for_model: true,
         },
       }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+
+      console.error("Hugging Face topic summary failed:", response.status);
+      console.error(errorText);
+
+      return buildFallbackTopicSummary(group);
     }
-  );
 
-  if (!response.ok) {
-    const errorText = await response.text();
+    const result = await response.json();
 
-    console.error("Hugging Face topic summary failed:", response.status);
-    console.error(errorText);
+    if (Array.isArray(result) && result[0]?.summary_text) {
+      return result[0].summary_text;
+    }
 
-    throw new Error(errorText);
+    if (result.summary_text) {
+      return result.summary_text;
+    }
+
+    return "No summary was returned for this topic.";
+  } catch (error) {
+    console.error("Hugging Face topic summary request failed:", error);
+
+    return buildFallbackTopicSummary(group);
   }
-
-  const result = await response.json();
-
-  if (Array.isArray(result) && result[0]?.summary_text) {
-    return result[0].summary_text;
-  }
-
-  if (result.summary_text) {
-    return result.summary_text;
-  }
-
-  return "No summary was returned for this topic.";
 }
 
 export async function POST(request: Request) {
@@ -255,7 +261,9 @@ export async function POST(request: Request) {
 
     const groups = groupSimilarArticles(articles.slice(0, 25));
 
-    if (!process.env.HF_TOKEN?.trim()) {
+    const hfToken = getEnvValue("HF_TOKEN");
+
+    if (!hfToken?.trim()) {
       const topicSummaries: TopicSummary[] = groups.map((group) => ({
         topic: buildTopicTitle(group),
         summary: buildFallbackTopicSummary(group),

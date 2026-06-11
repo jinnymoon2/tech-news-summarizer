@@ -8,15 +8,25 @@ type Tab = "news" | "summary";
 export default function HomePage() {
   const [articles, setArticles] = useState<NewsArticle[]>([]);
   const [activeTab, setActiveTab] = useState<Tab>("news");
+  const [selectedCategory, setSelectedCategory] = useState("All");
   const [loadingNews, setLoadingNews] = useState(true);
   const [summary, setSummary] = useState("");
   const [topicSummaries, setTopicSummaries] = useState<TopicSummary[]>([]);
   const [loadingSummary, setLoadingSummary] = useState(false);
   const [error, setError] = useState("");
 
-  const categories = useMemo(() => {
-    return Array.from(new Set(articles.map((article) => article.category)));
-  }, [articles]);
+  const categories = useMemo(
+    () => Array.from(new Set(articles.map((article) => article.category))),
+    [articles]
+  );
+
+  const filteredArticles = useMemo(() => {
+    if (selectedCategory === "All") {
+      return articles;
+    }
+
+    return articles.filter((article) => article.category === selectedCategory);
+  }, [articles, selectedCategory]);
 
   useEffect(() => {
     async function loadNews() {
@@ -150,8 +160,12 @@ export default function HomePage() {
               <LoadingGrid />
             ) : (
               <>
-                <CategoryStrip categories={categories} />
-                <NewsGrid articles={articles} />
+                <CategoryStrip
+                  categories={categories}
+                  selectedCategory={selectedCategory}
+                  onSelectCategory={setSelectedCategory}
+                />
+                <NewsGrid articles={filteredArticles} />
               </>
             )}
           </>
@@ -171,17 +185,36 @@ export default function HomePage() {
   );
 }
 
-function CategoryStrip({ categories }: { categories: string[] }) {
+function CategoryStrip({
+  categories,
+  selectedCategory,
+  onSelectCategory,
+}: {
+  categories: string[];
+  selectedCategory: string;
+  onSelectCategory: (category: string) => void;
+}) {
+  const allCategories = ["All", ...categories];
+
   return (
     <div className="mb-6 flex flex-wrap gap-2">
-      {categories.map((category) => (
-        <span
-          key={category}
-          className="rounded-full border border-neutral-800 bg-neutral-900 px-4 py-2 text-sm text-neutral-300"
-        >
-          {category}
-        </span>
-      ))}
+      {allCategories.map((category) => {
+        const isSelected = selectedCategory === category;
+
+        return (
+          <button
+            key={category}
+            onClick={() => onSelectCategory(category)}
+            className={`rounded-full border px-4 py-2 text-sm font-medium transition ${
+              isSelected
+                ? "border-cyan-400 bg-cyan-400 text-neutral-950"
+                : "border-neutral-800 bg-neutral-900 text-neutral-300 hover:border-cyan-400/60 hover:text-cyan-200"
+            }`}
+          >
+            {category}
+          </button>
+        );
+      })}
     </div>
   );
 }
