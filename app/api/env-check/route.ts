@@ -1,11 +1,13 @@
+import { getEnvValue } from "@/app/lib/env";
+
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  const token = getEnvValue("HF_TOKEN");
+
   return Response.json({
-    hasToken: Boolean(process.env.HF_TOKEN),
-    tokenPrefix: process.env.HF_TOKEN
-      ? process.env.HF_TOKEN.slice(0, 3)
-      : null,
+    hasToken: Boolean(token),
+    tokenPrefix: token ? token.slice(0, 3) : null,
     environment: process.env.VERCEL_ENV || "local",
   });
 }
